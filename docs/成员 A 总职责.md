@@ -200,7 +200,11 @@ func (c *Client) Ping(ctx context.Context) error
 ```
 func NewRouter(h *handler.Handler) *gin.Engine {
     r := gin.Default()
-    r.GET("/health", h.Health)
+    
+    api := r.Group("/api")
+    {
+    	api.Get("/health",handler.Health)
+    }
     return r
 }
 ```
@@ -230,7 +234,7 @@ go run cmd/server/main.go
 然后：
 
 ```
-curl http://localhost:8080/health
+curl http://localhost:8080/api/health
 ```
 
 返回：
@@ -249,7 +253,7 @@ curl http://localhost:8080/health
 
 ```
 1. 服务能启动。
-2. /health 返回 200。
+2. /api/health 返回 200。
 3. Etcd 连接失败时，日志能看出原因。
 4. 代码已经拆到 config/router/handler/etcd，不是全堆 main.go。
 ```
