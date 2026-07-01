@@ -7,11 +7,11 @@ type APIResponse struct {
 }
 
 type PublishConfigRequest struct {
-	App     string            `json:"app"`
-	Env     string            `json:"env"`
-	Config  map[string]string `json:"config"`
-	Publish string            `json:"publish"`
-	Comment string            `json:"comment"`
+	App       string            `json:"app"`
+	Env       string            `json:"env"`
+	Configs   map[string]string `json:"configs"`
+	Publisher string            `json:"publisher"`
+	Comment   string            `json:"comment"`
 }
 
 type PublishConfigResponse struct {
