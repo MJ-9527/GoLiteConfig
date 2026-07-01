@@ -9,8 +9,6 @@ import (
 func SetupRouter() *gin.Engine {
 	r := gin.Default()
 
-	r.GET("/health", handler.Health)
-
 	api := r.Group("/api")
 	{
 		api.GET("/health", handler.Health)
