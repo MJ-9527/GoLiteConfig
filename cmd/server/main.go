@@ -1,11 +1,30 @@
 package main
 
-import "GoLiteConfig/internal/router"
+import (
+	"context"
+	"log"
+
+	"GoLiteConfig/internal/config"
+	"GoLiteConfig/internal/etcd"
+	"GoLiteConfig/internal/router"
+)
 
 func main() {
-	r := router.SetupRouter()
-	err := r.Run(":8080")
+	cfg := config.Load()
+
+	etcdClient, err := etcd.NewClient(cfg.EtcdEndpoints)
 	if err != nil {
-		return
+		log.Fatalf("init etcd client failed: %v", err)
+	}
+	defer etcdClient.Close()
+
+	if err := etcdClient.Ping(context.Background()); err != nil {
+		log.Fatalf("connect etcd failed: %v", err)
+	}
+	log.Printf("connected to etcd: %v", cfg.EtcdEndpoints)
+
+	r := router.SetupRouter()
+	if err := r.Run(":" + cfg.Port); err != nil {
+		log.Fatalf("start http server failed: %v", err)
 	}
 }

@@ -18,7 +18,7 @@ func Load() Config {
 
 	endpoints := splitEnv(os.Getenv("ETCD_ENDPOINTS"))
 	if len(endpoints) == 0 {
-		endpoints = []string{"localhost:2379"}
+		endpoints = []string{"http://localhost:2379"}
 	}
 
 	return Config{
