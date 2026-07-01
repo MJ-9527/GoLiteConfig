@@ -42,3 +42,25 @@ func (c *Client) Ping(ctx context.Context) error {
 func (c *Client) Raw() *clientv3.Client {
 	return c.cli
 }
+
+func (c *Client) Get(ctx context.Context, key string) (string, bool, int64, error) {
+	resp, err := c.cli.Get(ctx, key)
+	if err != nil {
+		return "", false, 0, err
+	}
+
+	if len(resp.Kvs) == 0 {
+		return "", false, resp.Header.Revision, nil
+	}
+
+	return string(resp.Kvs[0].Value), true, resp.Header.Revision, nil
+}
+
+func (c *Client) Put(ctx context.Context, key, value string) (int64, error) {
+	resp, err := c.cli.Put(ctx, key, value)
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Header.Revision, nil
+}
