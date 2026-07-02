@@ -1,6 +1,8 @@
 package main
 
 import (
+	"GoLiteConfig/internal/handler"
+	"GoLiteConfig/internal/service"
 	"context"
 	"log"
 
@@ -23,7 +25,10 @@ func main() {
 	}
 	log.Printf("connected to etcd: %v", cfg.EtcdEndpoints)
 
-	r := router.SetupRouter()
+	configService := service.NewConfigService(etcdClient)
+	configHandler := handler.NewConfigHandler(configService)
+
+	r := router.SetupRouter(configHandler)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("start http server failed: %v", err)
 	}
