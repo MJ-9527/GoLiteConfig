@@ -15,6 +15,7 @@ func SetupRouter(configHandler *handler.ConfigHandler) *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.POST("/config", configHandler.PublishConfig)
+		api.GET("/config", configHandler.GetConfig)
 	}
 	return r
 }
