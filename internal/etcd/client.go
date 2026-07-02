@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -63,4 +64,13 @@ func (c *Client) Put(ctx context.Context, key, value string) (int64, error) {
 	}
 
 	return resp.Header.Revision, nil
+}
+
+func (c *Client) GetPrefix(ctx context.Context, prefix string) ([]*mvccpb.KeyValue, int64, error) {
+	resp, err := c.cli.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return resp.Kvs, resp.Header.Revision, nil
 }
