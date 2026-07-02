@@ -6,13 +6,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter() *gin.Engine {
+func SetupRouter(configHandler *handler.ConfigHandler) *gin.Engine {
 	r := gin.Default()
+
+	// /health联通测试接口
+	r.GET("/health", handler.Health)
 
 	api := r.Group("/api")
 	{
-		api.GET("/health", handler.Health)
+		api.POST("/config", configHandler.PublishConfig)
 	}
-
 	return r
 }
