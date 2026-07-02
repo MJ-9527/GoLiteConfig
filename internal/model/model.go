@@ -29,6 +29,14 @@ type GetConfigRequest struct {
 	Configs  map[string]string `json:"configs"`
 }
 
+type GetConfigResponse struct {
+	App      string            `json:"app"`
+	Env      string            `json:"env"`
+	Version  string            `json:"version"`
+	Revision int64             `json:"revision"`
+	Configs  map[string]string `json:"configs"`
+}
+
 type ConfigMeta struct {
 	Version   string `json:"version"`
 	Revision  int64  `json:"revision"`
