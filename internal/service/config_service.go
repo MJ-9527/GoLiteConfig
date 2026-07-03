@@ -254,3 +254,85 @@ func versionNumber(version string) int {
 	}
 	return n
 }
+
+func (s *ConfigService) getConfigByVersion(ctx context.Context, app, env, version string) (map[string]string, error) {
+	if app == "" || env == "" || version == "" {
+		return nil, fmt.Errorf("invalid rollback target")
+	}
+
+	baseKey := fmt.Sprintf("/config/%s/%s", app, env)
+	versionPrefix := fmt.Sprintf("%s/versions/%s/", baseKey, version)
+
+	kvs, _, err := s.etcd.GetPrefix(ctx, versionPrefix)
+	if err != nil {
+		return nil, err
+	}
+	if len(kvs) == 0 {
+		return nil, fmt.Errorf("target version not found")
+	}
+
+	configs := make(map[string]string, len(kvs))
+	for _, kv := range kvs {
+		configKey, err := parseConfigKey(string(kv.Key), versionPrefix)
+		if err != nil {
+			return nil, err
+		}
+		configs[configKey] = string(kv.Value)
+	}
+
+	return configs, nil
+}
+
+func (s *ConfigService) Rollback(ctx context.Context, req model.RollbackRequest) (*model.RollbackResponse, error) {
+	if req.App == "" {
+		return nil, fmt.Errorf("app is required")
+	}
+
+	if req.Env == "" {
+		return nil, fmt.Errorf("env is required")
+	}
+
+	if req.TargetVersion == "" {
+		return nil, fmt.Errorf("target version is required")
+	}
+
+	baseKey := fmt.Sprintf("/config/%s/%s", req.App, req.Env)
+
+	fromVersion, exists, _, err := s.etcd.Get(ctx, baseKey+"/current")
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("config not found")
+	}
+
+	targetConfig, err := s.getConfigByVersion(ctx, req.App, req.Env, req.TargetVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	comment := req.Comment
+	if strings.TrimSpace(comment) == "" {
+		comment = fmt.Sprintf("rollback to %s", req.TargetVersion)
+	}
+
+	publishResp, err := s.Publish(ctx, model.PublishConfigRequest{
+		App:       req.App,
+		Env:       req.Env,
+		Configs:   targetConfig,
+		Publisher: req.Publisher,
+		Comment:   comment,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &model.RollbackResponse{
+		App:           req.App,
+		Env:           req.Env,
+		FromVersion:   fromVersion,
+		TargetVersion: req.TargetVersion,
+		NewVersion:    publishResp.Version,
+		Revision:      publishResp.Revision,
+	}, nil
+}
