@@ -50,3 +50,20 @@ type ListConfigsRequest struct {
 	Current  string       `json:"current"`
 	Versions []ConfigMeta `json:"versions"`
 }
+
+type RollbackRequest struct {
+	App           string `json:"app"`
+	Env           string `json:"env"`
+	TargetVersion string `json:"target_version"`
+	Publisher     string `json:"publisher"`
+	Comment       string `json:"comment"`
+}
+
+type RollbackResponse struct {
+	App           string `json:"app"`
+	Env           string `json:"env"`
+	FromVersion   string `json:"from_version"`
+	TargetVersion string `json:"target_version"`
+	NewVersion    string `json:"new_version"`
+	Revision      int64  `json:"revision"`
+}
