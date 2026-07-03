@@ -101,3 +101,36 @@ func (h *ConfigHandler) ListVersions(c *gin.Context) {
 		Data:    resp,
 	})
 }
+
+func (h *ConfigHandler) Rollback(c *gin.Context) {
+	var req model.RollbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.APIResponse{
+			Code:    40001,
+			Message: "invalid request body",
+			Data:    nil,
+		})
+		return
+	}
+
+	resp, err := h.service.Rollback(c.Request.Context(), req)
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "config not found" || err.Error() == "target version not found" {
+			status = http.StatusNotFound
+		}
+
+		c.JSON(status, model.APIResponse{
+			Code:    40001,
+			Message: err.Error(),
+			Data:    nil,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, model.APIResponse{
+		Code:    0,
+		Message: "success",
+		Data:    resp,
+	})
+}
