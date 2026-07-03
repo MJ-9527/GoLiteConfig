@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -193,4 +194,63 @@ func parseConfigKey(fullKey, prefix string) (string, error) {
 	}
 
 	return parts[0] + "." + parts[1], nil
+}
+
+func (s *ConfigService) ListVersions(ctx context.Context, app, env string) (*model.ListConfigsRequest, error) {
+	if app == "" {
+		return nil, fmt.Errorf("app is required")
+	}
+
+	if env == "" {
+		return nil, fmt.Errorf("env is required")
+	}
+
+	baseKey := fmt.Sprintf("/config/%s/%s", app, env)
+
+	current, exists, _, err := s.etcd.Get(ctx, baseKey+"/current")
+	if err != nil {
+		return nil, err
+	}
+
+	if !exists {
+		return nil, fmt.Errorf("config not found")
+	}
+
+	metaPrefix := baseKey + "/meta/"
+	kvs, _, err := s.etcd.GetPrefix(ctx, metaPrefix)
+	if err != nil {
+		return nil, err
+	}
+	if len(kvs) == 0 {
+		return nil, fmt.Errorf("config not found")
+	}
+
+	versions := make([]model.ConfigMeta, 0, len(kvs))
+	for _, kv := range kvs {
+		var meta model.ConfigMeta
+		if err = json.Unmarshal(kv.Value, &meta); err != nil {
+			return nil, err
+		}
+		versions = append(versions, meta)
+	}
+
+	sort.Slice(versions, func(i, j int) bool {
+		return versionNumber(versions[i].Version) < versionNumber(versions[j].Version)
+	})
+
+	return &model.ListConfigsRequest{
+		App:      app,
+		Env:      env,
+		Current:  current,
+		Versions: versions,
+	}, nil
+}
+
+func versionNumber(version string) int {
+	version = strings.TrimPrefix(version, "v")
+	n, err := strconv.Atoi(version)
+	if err != nil {
+		return 0
+	}
+	return n
 }
