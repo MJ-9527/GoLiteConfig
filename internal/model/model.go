@@ -44,3 +44,9 @@ type ConfigMeta struct {
 	Comment   string `json:"comment"`
 	CreatedAt int64  `json:"created_at"`
 }
+type ListConfigsRequest struct {
+	App      string       `json:"app"`
+	Env      string       `json:"env"`
+	Current  string       `json:"current"`
+	Versions []ConfigMeta `json:"versions"`
+}
