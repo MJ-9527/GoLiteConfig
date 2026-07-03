@@ -16,6 +16,7 @@ func SetupRouter(configHandler *handler.ConfigHandler) *gin.Engine {
 	{
 		api.POST("/config", configHandler.PublishConfig)
 		api.GET("/config", configHandler.GetConfig)
+		api.GET("/config/versions", configHandler.ListVersions)
 	}
 	return r
 }
