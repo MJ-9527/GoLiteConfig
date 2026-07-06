@@ -4,6 +4,7 @@ import (
 	"GoLiteConfig/internal/model"
 	"GoLiteConfig/internal/service"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -125,6 +126,57 @@ func (h *ConfigHandler) Rollback(c *gin.Context) {
 			Message: err.Error(),
 			Data:    nil,
 		})
+		return
+	}
+
+	c.JSON(http.StatusOK, model.APIResponse{
+		Code:    0,
+		Message: "success",
+		Data:    resp,
+	})
+}
+
+func (h *ConfigHandler) Watch(c *gin.Context) {
+	app := c.Query("app")
+	env := c.Query("env")
+	lastRevisionStr := c.Query("last_revision")
+
+	if lastRevisionStr == "" {
+		c.JSON(http.StatusBadRequest, model.APIResponse{
+			Code:    40001,
+			Message: "last_revision is required",
+			Data:    nil,
+		})
+		return
+	}
+
+	lastRevision, err := strconv.ParseInt(lastRevisionStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.APIResponse{
+			Code:    40001,
+			Message: "last_revision is invalid",
+			Data:    nil,
+		})
+		return
+	}
+
+	resp, changed, err := h.service.Watch(c.Request.Context(), app, env, lastRevision)
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "config not found" {
+			status = http.StatusNotFound
+		}
+
+		c.JSON(status, model.APIResponse{
+			Code:    40001,
+			Message: err.Error(),
+			Data:    nil,
+		})
+		return
+	}
+
+	if !changed {
+		c.Status(http.StatusNotModified)
 		return
 	}
 
