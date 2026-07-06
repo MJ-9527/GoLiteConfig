@@ -13,11 +13,15 @@ import (
 )
 
 type ConfigService struct {
-	etcd *etcd.Client
+	etcd     *etcd.Client
+	watchMgr *WatchManager
 }
 
-func NewConfigService(etcdClient *etcd.Client) *ConfigService {
-	return &ConfigService{etcd: etcdClient}
+func NewConfigService(etcdClient *etcd.Client, watchMgr *WatchManager) *ConfigService {
+	return &ConfigService{
+		etcd:     etcdClient,
+		watchMgr: watchMgr,
+	}
 }
 
 func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequest) (*model.PublishConfigResponse, error) {
@@ -115,6 +119,10 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 		return nil, err
 	}
 
+	if s.watchMgr != nil {
+		s.watchMgr.Notify(req.App, req.Env)
+	}
+
 	// 返回结果
 	return &model.PublishConfigResponse{
 		App:      req.App,
@@ -161,7 +169,7 @@ func (s *ConfigService) GetCurrent(ctx context.Context, app, env string) (*model
 	}
 
 	versionPrefix := fmt.Sprintf("%s/versions/%s/", baseKey, version)
-	kvs, _, err := s.etcd.GetPrefix(ctx, versionPrefix)
+	kvs, revision, err := s.etcd.GetPrefix(ctx, versionPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -179,10 +187,11 @@ func (s *ConfigService) GetCurrent(ctx context.Context, app, env string) (*model
 	}
 
 	return &model.GetConfigResponse{
-		App:     app,
-		Env:     env,
-		Version: version,
-		Configs: configs,
+		App:      app,
+		Env:      env,
+		Version:  version,
+		Revision: revision,
+		Configs:  configs,
 	}, nil
 }
 
@@ -335,4 +344,56 @@ func (s *ConfigService) Rollback(ctx context.Context, req model.RollbackRequest)
 		NewVersion:    publishResp.Version,
 		Revision:      publishResp.Revision,
 	}, nil
+}
+
+func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision int64) (*model.WatchConfigsResponse, bool, error) {
+	if app == "" {
+		return nil, false, fmt.Errorf("app is required")
+	}
+
+	if env == "" {
+		return nil, false, fmt.Errorf("env is required")
+	}
+
+	current, err := s.GetCurrent(ctx, app, env)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if current.Revision > lastRevision {
+		return &model.WatchConfigsResponse{
+			App:      current.App,
+			Env:      current.Env,
+			Version:  current.Version,
+			Revision: current.Revision,
+			Configs:  current.Configs,
+		}, true, nil
+	}
+
+	ch := s.watchMgr.Add(app, env)
+	defer s.watchMgr.Remove(app, env, ch)
+
+	timer := time.NewTimer(60 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case <-ch:
+		latest, err := s.GetCurrent(ctx, app, env)
+		if err != nil {
+			return nil, false, err
+		}
+		return &model.WatchConfigsResponse{
+			App:      latest.App,
+			Env:      latest.Env,
+			Version:  latest.Version,
+			Revision: latest.Revision,
+			Configs:  latest.Configs,
+		}, true, nil
+
+	case <-timer.C:
+		return nil, false, nil
+
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	}
 }
