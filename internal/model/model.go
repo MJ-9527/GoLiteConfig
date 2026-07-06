@@ -67,3 +67,11 @@ type RollbackResponse struct {
 	NewVersion    string `json:"new_version"`
 	Revision      int64  `json:"revision"`
 }
+
+type WatchConfigsResponse struct {
+	App      string            `json:"app"`
+	Env      string            `json:"env"`
+	Version  string            `json:"version"`
+	Revision int64             `json:"revision"`
+	Configs  map[string]string `json:"configs"`
+}
