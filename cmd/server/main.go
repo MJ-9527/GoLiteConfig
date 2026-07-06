@@ -25,7 +25,8 @@ func main() {
 	}
 	log.Printf("connected to etcd: %v", cfg.EtcdEndpoints)
 
-	configService := service.NewConfigService(etcdClient)
+	watchMgr := service.NewWatchManager()
+	configService := service.NewConfigService(etcdClient, watchMgr)
 	configHandler := handler.NewConfigHandler(configService)
 
 	r := router.SetupRouter(configHandler)
