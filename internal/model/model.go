@@ -44,7 +44,7 @@ type ConfigMeta struct {
 	Comment   string `json:"comment"`
 	CreatedAt int64  `json:"created_at"`
 }
-type ListConfigsRequest struct {
+type ListVersionsResponse struct {
 	App      string       `json:"app"`
 	Env      string       `json:"env"`
 	Current  string       `json:"current"`
@@ -68,10 +68,26 @@ type RollbackResponse struct {
 	Revision      int64  `json:"revision"`
 }
 
-type WatchConfigsResponse struct {
+type WatchConfigResponse struct {
 	App      string            `json:"app"`
 	Env      string            `json:"env"`
 	Version  string            `json:"version"`
 	Revision int64             `json:"revision"`
 	Configs  map[string]string `json:"configs"`
+}
+
+type DeleteVersionsRequest struct {
+	App      string   `json:"app"`
+	Env      string   `json:"env"`
+	Version  string   `json:"version"`
+	Versions []string `json:"versions"`
+}
+
+type DeleteVersionsResponse struct {
+	App      string   `json:"app"`
+	Env      string   `json:"env"`
+	Current  string   `json:"current"`
+	Deleted  []string `json:"deleted"`
+	Skipped  []string `json:"skipped,omitempty"`
+	Revision int64    `json:"revision"`
 }
