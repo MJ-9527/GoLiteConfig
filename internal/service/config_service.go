@@ -205,7 +205,7 @@ func parseConfigKey(fullKey, prefix string) (string, error) {
 	return parts[0] + "." + parts[1], nil
 }
 
-func (s *ConfigService) ListVersions(ctx context.Context, app, env string) (*model.ListConfigsRequest, error) {
+func (s *ConfigService) ListVersions(ctx context.Context, app, env string) (*model.ListVersionsResponse, error) {
 	if app == "" {
 		return nil, fmt.Errorf("app is required")
 	}
@@ -247,7 +247,7 @@ func (s *ConfigService) ListVersions(ctx context.Context, app, env string) (*mod
 		return versionNumber(versions[i].Version) < versionNumber(versions[j].Version)
 	})
 
-	return &model.ListConfigsRequest{
+	return &model.ListVersionsResponse{
 		App:      app,
 		Env:      env,
 		Current:  current,
@@ -346,7 +346,7 @@ func (s *ConfigService) Rollback(ctx context.Context, req model.RollbackRequest)
 	}, nil
 }
 
-func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision int64) (*model.WatchConfigsResponse, bool, error) {
+func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision int64) (*model.WatchConfigResponse, bool, error) {
 	if app == "" {
 		return nil, false, fmt.Errorf("app is required")
 	}
@@ -361,7 +361,7 @@ func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision
 	}
 
 	if current.Revision > lastRevision {
-		return &model.WatchConfigsResponse{
+		return &model.WatchConfigResponse{
 			App:      current.App,
 			Env:      current.Env,
 			Version:  current.Version,
@@ -382,7 +382,7 @@ func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision
 		if err != nil {
 			return nil, false, err
 		}
-		return &model.WatchConfigsResponse{
+		return &model.WatchConfigResponse{
 			App:      latest.App,
 			Env:      latest.Env,
 			Version:  latest.Version,
@@ -396,4 +396,102 @@ func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision
 	case <-ctx.Done():
 		return nil, false, ctx.Err()
 	}
+}
+
+func (s *ConfigService) DeleteVersions(ctx context.Context, req model.DeleteVersionsRequest) (*model.DeleteVersionsResponse, error) {
+	if req.App == "" {
+		return nil, fmt.Errorf("app is required")
+	}
+	if req.Env == "" {
+		return nil, fmt.Errorf("env is required")
+	}
+
+	versions := normalizeVersions(req.Version, req.Versions)
+	if len(versions) == 0 {
+		return nil, fmt.Errorf("version or versions is required")
+	}
+
+	baseKey := fmt.Sprintf("/config/%s/%s", req.App, req.Env)
+	current, exists, _, err := s.etcd.Get(ctx, baseKey+"/current")
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("config not found")
+	}
+
+	deleted := make([]string, 0, len(versions))
+	skipped := make([]string, 0, len(versions))
+	var revision int64
+
+	for _, version := range versions {
+		if version == current {
+			skipped = append(skipped, version)
+			continue
+		}
+
+		configPrefix := fmt.Sprintf("%s/versions/%s/", baseKey, version)
+		metaKey := fmt.Sprintf("%s/meta/%s", baseKey, version)
+
+		kvs, _, err := s.etcd.GetPrefix(ctx, configPrefix)
+		if err != nil {
+			return nil, err
+		}
+		if len(kvs) == 0 {
+			return nil, fmt.Errorf("target version not found")
+		}
+
+		revision, err = s.etcd.DeletePrefix(ctx, configPrefix)
+		if err != nil {
+			return nil, err
+		}
+		revision, err = s.etcd.Delete(ctx, metaKey)
+		if err != nil {
+			return nil, err
+		}
+
+		deleted = append(deleted, version)
+	}
+
+	if len(deleted) == 0 && len(skipped) > 0 {
+		return nil, fmt.Errorf("cannot delete current version")
+	}
+
+	return &model.DeleteVersionsResponse{
+		App:      req.App,
+		Env:      req.Env,
+		Current:  current,
+		Deleted:  deleted,
+		Skipped:  skipped,
+		Revision: revision,
+	}, nil
+}
+
+func normalizeVersions(single string, multiple []string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(multiple)+1)
+
+	add := func(version string) {
+		version = strings.TrimSpace(version)
+		if version == "" {
+			return
+		}
+		if _, ok := seen[version]; ok {
+			return
+		}
+		seen[version] = struct{}{}
+		result = append(result, version)
+	}
+
+	add(single)
+	for _, version := range multiple {
+		add(version)
+	}
+
+	return result
+}
+
+func (s *ConfigService) ResetConfigs(ctx context.Context) error {
+	_, err := s.etcd.DeletePrefix(ctx, "/config/")
+	return err
 }
