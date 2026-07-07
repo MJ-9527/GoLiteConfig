@@ -2,6 +2,7 @@ package service
 
 import (
 	"GoLiteConfig/internal/etcd"
+	"GoLiteConfig/internal/logging"
 	"GoLiteConfig/internal/model"
 	"context"
 	"encoding/json"
@@ -10,47 +11,60 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type ConfigService struct {
 	etcd     *etcd.Client
 	watchMgr *WatchManager
+	logger   *zap.Logger
+	audit    *AuditLogger
 }
 
-func NewConfigService(etcdClient *etcd.Client, watchMgr *WatchManager) *ConfigService {
+func NewConfigService(etcdClient *etcd.Client, watchMgr *WatchManager, logger *zap.Logger, audit *AuditLogger) *ConfigService {
 	return &ConfigService{
 		etcd:     etcdClient,
 		watchMgr: watchMgr,
+		logger:   logger,
+		audit:    audit,
 	}
 }
 
 func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequest) (*model.PublishConfigResponse, error) {
-	// 校验参数
+	log := logging.FromContext(ctx).With(
+		zap.String("app", req.App),
+		zap.String("env", req.Env),
+		zap.String("publisher", req.Publisher),
+	)
+
 	if req.App == "" {
+		log.Warn("publish validation failed", zap.String("reason", "app is required"))
 		return nil, fmt.Errorf("app is required")
 	}
 	if req.Env == "" {
+		log.Warn("publish validation failed", zap.String("reason", "env is required"))
 		return nil, fmt.Errorf("env is required")
 	}
-	if len(req.Configs) == 0 {
-		return nil, fmt.Errorf("configs is required")
-	}
-
-	// 拼写路径
-	baseKey := fmt.Sprintf("/config/%s/%s", req.App, req.Env)
-
-	// 读取version_counter
-	counterKey := baseKey + "/version_counter"
-	counterValue, exists, _, err := s.etcd.Get(ctx, counterKey)
-	if err != nil {
+	if err := validateConfigs(req.Configs); err != nil {
+		log.Warn("publish validation failed", zap.Error(err))
 		return nil, err
 	}
 
-	// 生成新版本号
+	baseKey := fmt.Sprintf("/config/%s/%s", req.App, req.Env)
+	counterKey := baseKey + "/version_counter"
+
+	counterValue, exists, _, err := s.etcd.Get(ctx, counterKey)
+	if err != nil {
+		log.Error("load version counter failed", zap.Error(err))
+		return nil, err
+	}
+
 	nextNumber := 1
 	if exists {
 		currentNumber, err := strconv.Atoi(counterValue)
 		if err != nil {
+			log.Error("invalid version counter", zap.String("counter_value", counterValue), zap.Error(err))
 			return nil, fmt.Errorf("invalid version_counter: %w", err)
 		}
 		nextNumber = currentNumber + 1
@@ -58,7 +72,6 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 
 	version := fmt.Sprintf("v%d", nextNumber)
 
-	// 写config
 	type parsedConfig struct {
 		group string
 		key   string
@@ -69,6 +82,7 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 	for configKey, configValue := range req.Configs {
 		group, key, err := splitConfigKey(configKey)
 		if err != nil {
+			log.Warn("split config key failed", zap.String("config_key", configKey), zap.Error(err))
 			return nil, err
 		}
 
@@ -78,17 +92,18 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 			value: configValue,
 		})
 	}
+
 	var revision int64
 	for _, cfg := range parsedConfigs {
 		etcdKey := fmt.Sprintf("%s/versions/%s/%s/%s", baseKey, version, cfg.group, cfg.key)
 
 		revision, err = s.etcd.Put(ctx, etcdKey, cfg.value)
 		if err != nil {
+			log.Error("write config failed", zap.String("etcd_key", etcdKey), zap.Error(err))
 			return nil, err
 		}
 	}
 
-	// 写meta(meta为版本说明)
 	meta := model.ConfigMeta{
 		Version:   version,
 		Revision:  revision,
@@ -99,23 +114,25 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
+		log.Error("marshal config meta failed", zap.Error(err))
 		return nil, err
 	}
 
 	revision, err = s.etcd.Put(ctx, fmt.Sprintf("%s/meta/%s", baseKey, version), string(metaBytes))
 	if err != nil {
+		log.Error("write config meta failed", zap.String("version", version), zap.Error(err))
 		return nil, err
 	}
 
-	// 更新current
 	revision, err = s.etcd.Put(ctx, baseKey+"/current", version)
 	if err != nil {
+		log.Error("update current version failed", zap.String("version", version), zap.Error(err))
 		return nil, err
 	}
 
-	// 更新version_counter
 	revision, err = s.etcd.Put(ctx, counterKey, strconv.Itoa(nextNumber))
 	if err != nil {
+		log.Error("update version counter failed", zap.String("version", version), zap.Error(err))
 		return nil, err
 	}
 
@@ -123,7 +140,21 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 		s.watchMgr.Notify(req.App, req.Env)
 	}
 
-	// 返回结果
+	log.Info("publish config succeeded",
+		zap.String("version", version),
+		zap.Int64("revision", revision),
+		zap.Int("config_count", len(req.Configs)),
+	)
+
+	s.audit.Log(ctx, "publish_config",
+		zap.String("app", req.App),
+		zap.String("env", req.Env),
+		zap.String("version", version),
+		zap.String("publisher", req.Publisher),
+		zap.String("comment", req.Comment),
+		zap.Int("config_count", len(req.Configs)),
+	)
+
 	return &model.PublishConfigResponse{
 		App:      req.App,
 		Env:      req.Env,
@@ -158,8 +189,8 @@ func (s *ConfigService) GetCurrent(ctx context.Context, app, env string) (*model
 	}
 
 	baseKey := fmt.Sprintf("/config/%s/%s", app, env)
-
 	currentKey := baseKey + "/current"
+
 	version, exists, _, err := s.etcd.Get(ctx, currentKey)
 	if err != nil {
 		return nil, err
@@ -215,7 +246,6 @@ func (s *ConfigService) ListVersions(ctx context.Context, app, env string) (*mod
 	}
 
 	baseKey := fmt.Sprintf("/config/%s/%s", app, env)
-
 	current, exists, _, err := s.etcd.Get(ctx, baseKey+"/current")
 	if err != nil {
 		return nil, err
@@ -293,22 +323,32 @@ func (s *ConfigService) getConfigByVersion(ctx context.Context, app, env, versio
 }
 
 func (s *ConfigService) Rollback(ctx context.Context, req model.RollbackRequest) (*model.RollbackResponse, error) {
+	log := logging.FromContext(ctx).With(
+		zap.String("app", req.App),
+		zap.String("env", req.Env),
+		zap.String("target_version", req.TargetVersion),
+		zap.String("publisher", req.Publisher),
+	)
+
 	if req.App == "" {
+		log.Warn("rollback validation failed", zap.String("reason", "app is required"))
 		return nil, fmt.Errorf("app is required")
 	}
 
 	if req.Env == "" {
+		log.Warn("rollback validation failed", zap.String("reason", "env is required"))
 		return nil, fmt.Errorf("env is required")
 	}
 
 	if req.TargetVersion == "" {
+		log.Warn("rollback validation failed", zap.String("reason", "target version is required"))
 		return nil, fmt.Errorf("target version is required")
 	}
 
 	baseKey := fmt.Sprintf("/config/%s/%s", req.App, req.Env)
-
 	fromVersion, exists, _, err := s.etcd.Get(ctx, baseKey+"/current")
 	if err != nil {
+		log.Error("load current version failed", zap.Error(err))
 		return nil, err
 	}
 	if !exists {
@@ -317,6 +357,7 @@ func (s *ConfigService) Rollback(ctx context.Context, req model.RollbackRequest)
 
 	targetConfig, err := s.getConfigByVersion(ctx, req.App, req.Env, req.TargetVersion)
 	if err != nil {
+		log.Warn("load target version failed", zap.Error(err))
 		return nil, err
 	}
 
@@ -333,8 +374,24 @@ func (s *ConfigService) Rollback(ctx context.Context, req model.RollbackRequest)
 		Comment:   comment,
 	})
 	if err != nil {
+		log.Error("rollback publish failed", zap.Error(err))
 		return nil, err
 	}
+
+	log.Info("rollback succeeded",
+		zap.String("from_version", fromVersion),
+		zap.String("target_version", req.TargetVersion),
+		zap.String("new_version", publishResp.Version),
+	)
+
+	s.audit.Log(ctx, "rollback_config",
+		zap.String("app", req.App),
+		zap.String("env", req.Env),
+		zap.String("from_version", fromVersion),
+		zap.String("target_version", req.TargetVersion),
+		zap.String("new_version", publishResp.Version),
+		zap.String("publisher", req.Publisher),
+	)
 
 	return &model.RollbackResponse{
 		App:           req.App,
@@ -347,20 +404,30 @@ func (s *ConfigService) Rollback(ctx context.Context, req model.RollbackRequest)
 }
 
 func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision int64) (*model.WatchConfigResponse, bool, error) {
+	log := logging.FromContext(ctx).With(
+		zap.String("app", app),
+		zap.String("env", env),
+		zap.Int64("last_revision", lastRevision),
+	)
+
 	if app == "" {
+		log.Warn("watch validation failed", zap.String("reason", "app is required"))
 		return nil, false, fmt.Errorf("app is required")
 	}
 
 	if env == "" {
+		log.Warn("watch validation failed", zap.String("reason", "env is required"))
 		return nil, false, fmt.Errorf("env is required")
 	}
 
 	current, err := s.GetCurrent(ctx, app, env)
 	if err != nil {
+		log.Warn("load current config failed", zap.Error(err))
 		return nil, false, err
 	}
 
 	if current.Revision > lastRevision {
+		log.Info("watch immediate change detected", zap.Int64("current_revision", current.Revision))
 		return &model.WatchConfigResponse{
 			App:      current.App,
 			Env:      current.Env,
@@ -380,8 +447,11 @@ func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision
 	case <-ch:
 		latest, err := s.GetCurrent(ctx, app, env)
 		if err != nil {
+			log.Error("reload latest config failed", zap.Error(err))
 			return nil, false, err
 		}
+
+		log.Info("watch change delivered", zap.Int64("current_revision", latest.Revision))
 		return &model.WatchConfigResponse{
 			App:      latest.App,
 			Env:      latest.Env,
@@ -391,29 +461,40 @@ func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision
 		}, true, nil
 
 	case <-timer.C:
+		log.Info("watch timed out")
 		return nil, false, nil
 
 	case <-ctx.Done():
+		log.Warn("watch canceled", zap.Error(ctx.Err()))
 		return nil, false, ctx.Err()
 	}
 }
 
 func (s *ConfigService) DeleteVersions(ctx context.Context, req model.DeleteVersionsRequest) (*model.DeleteVersionsResponse, error) {
+	log := logging.FromContext(ctx).With(
+		zap.String("app", req.App),
+		zap.String("env", req.Env),
+	)
+
 	if req.App == "" {
+		log.Warn("delete versions validation failed", zap.String("reason", "app is required"))
 		return nil, fmt.Errorf("app is required")
 	}
 	if req.Env == "" {
+		log.Warn("delete versions validation failed", zap.String("reason", "env is required"))
 		return nil, fmt.Errorf("env is required")
 	}
 
 	versions := normalizeVersions(req.Version, req.Versions)
 	if len(versions) == 0 {
+		log.Warn("delete versions validation failed", zap.String("reason", "version or versions is required"))
 		return nil, fmt.Errorf("version or versions is required")
 	}
 
 	baseKey := fmt.Sprintf("/config/%s/%s", req.App, req.Env)
 	current, exists, _, err := s.etcd.Get(ctx, baseKey+"/current")
 	if err != nil {
+		log.Error("load current version failed", zap.Error(err))
 		return nil, err
 	}
 	if !exists {
@@ -435,6 +516,7 @@ func (s *ConfigService) DeleteVersions(ctx context.Context, req model.DeleteVers
 
 		kvs, _, err := s.etcd.GetPrefix(ctx, configPrefix)
 		if err != nil {
+			log.Error("load target version failed", zap.String("version", version), zap.Error(err))
 			return nil, err
 		}
 		if len(kvs) == 0 {
@@ -443,10 +525,12 @@ func (s *ConfigService) DeleteVersions(ctx context.Context, req model.DeleteVers
 
 		revision, err = s.etcd.DeletePrefix(ctx, configPrefix)
 		if err != nil {
+			log.Error("delete config version failed", zap.String("version", version), zap.Error(err))
 			return nil, err
 		}
 		revision, err = s.etcd.Delete(ctx, metaKey)
 		if err != nil {
+			log.Error("delete config meta failed", zap.String("version", version), zap.Error(err))
 			return nil, err
 		}
 
@@ -456,6 +540,20 @@ func (s *ConfigService) DeleteVersions(ctx context.Context, req model.DeleteVers
 	if len(deleted) == 0 && len(skipped) > 0 {
 		return nil, fmt.Errorf("cannot delete current version")
 	}
+
+	log.Info("delete versions succeeded",
+		zap.Strings("deleted_versions", deleted),
+		zap.Strings("skipped_versions", skipped),
+		zap.Int64("revision", revision),
+	)
+
+	s.audit.Log(ctx, "delete_versions",
+		zap.String("app", req.App),
+		zap.String("env", req.Env),
+		zap.Strings("deleted_versions", deleted),
+		zap.Strings("skipped_versions", skipped),
+		zap.Int64("revision", revision),
+	)
 
 	return &model.DeleteVersionsResponse{
 		App:      req.App,
@@ -492,6 +590,16 @@ func normalizeVersions(single string, multiple []string) []string {
 }
 
 func (s *ConfigService) ResetConfigs(ctx context.Context) error {
+	log := logging.FromContext(ctx)
+
+	s.audit.Log(ctx, "reset_configs")
+
 	_, err := s.etcd.DeletePrefix(ctx, "/config/")
-	return err
+	if err != nil {
+		log.Error("reset configs failed", zap.Error(err))
+		return err
+	}
+
+	log.Info("reset configs succeeded")
+	return nil
 }

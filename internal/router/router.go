@@ -2,14 +2,17 @@ package router
 
 import (
 	"GoLiteConfig/internal/handler"
+	"GoLiteConfig/internal/logging"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
-func SetupRouter(configHandler *handler.ConfigHandler) *gin.Engine {
-	r := gin.Default()
+func SetupRouter(configHandler *handler.ConfigHandler, logger *zap.Logger) *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(logging.RequestLogger(logger))
 
-	// /health联通测试接口
 	r.GET("/health", handler.Health)
 
 	api := r.Group("/api")
@@ -21,5 +24,6 @@ func SetupRouter(configHandler *handler.ConfigHandler) *gin.Engine {
 		api.POST("/config/rollback", configHandler.Rollback)
 		api.GET("/watch", configHandler.Watch)
 	}
+
 	return r
 }
