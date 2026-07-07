@@ -5,6 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -39,7 +42,12 @@ func main() {
 
 	printCurrentConfig(client, keys)
 
-	select {}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	log.Println("demo-service is running, waiting for config changes...")
+	<-sigCh
+	log.Println("demo-service shutting down...")
 }
 
 func printCurrentConfig(client *sdk.Client, keys []string) {
