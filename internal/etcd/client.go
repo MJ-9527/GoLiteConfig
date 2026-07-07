@@ -74,3 +74,21 @@ func (c *Client) GetPrefix(ctx context.Context, prefix string) ([]*mvccpb.KeyVal
 
 	return resp.Kvs, resp.Header.Revision, nil
 }
+
+func (c *Client) Delete(ctx context.Context, key string) (int64, error) {
+	resp, err := c.cli.Delete(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Header.Revision, nil
+}
+
+func (c *Client) DeletePrefix(ctx context.Context, prefix string) (int64, error) {
+	resp, err := c.cli.Delete(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Header.Revision, nil
+}
