@@ -23,30 +23,17 @@ func NewConfigHandler(configService *service.ConfigService) *ConfigHandler {
 func (h *ConfigHandler) PublishConfig(c *gin.Context) {
 	var req model.PublishConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.APIResponse{
-			Code:    40001,
-			Message: "invalid request body",
-			Data:    nil,
-		})
+		respondError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	resp, err := h.service.Publish(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.APIResponse{
-			Code:    40001,
-			Message: err.Error(),
-			Data:    nil,
-		})
+		respondError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, model.APIResponse{
-		Code:    0,
-		Message: "success",
-		Data:    resp,
-	})
-
+	respondSuccess(c, resp)
 }
 
 // GetConfig 读取 Config 响应结构
@@ -61,19 +48,11 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 			status = http.StatusNotFound
 		}
 
-		c.JSON(status, model.APIResponse{
-			Code:    40001,
-			Message: err.Error(),
-			Data:    nil,
-		})
+		respondError(c, status, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, model.APIResponse{
-		Code:    0,
-		Message: "success",
-		Data:    resp,
-	})
+	respondSuccess(c, resp)
 }
 
 // ListVersions 列出历史版本
@@ -88,29 +67,17 @@ func (h *ConfigHandler) ListVersions(c *gin.Context) {
 			status = http.StatusNotFound
 		}
 
-		c.JSON(status, model.APIResponse{
-			Code:    40001,
-			Message: err.Error(),
-			Data:    nil,
-		})
+		respondError(c, status, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, model.APIResponse{
-		Code:    0,
-		Message: "success",
-		Data:    resp,
-	})
+	respondSuccess(c, resp)
 }
 
 func (h *ConfigHandler) Rollback(c *gin.Context) {
 	var req model.RollbackRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.APIResponse{
-			Code:    40001,
-			Message: "invalid request body",
-			Data:    nil,
-		})
+		respondError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -121,19 +88,11 @@ func (h *ConfigHandler) Rollback(c *gin.Context) {
 			status = http.StatusNotFound
 		}
 
-		c.JSON(status, model.APIResponse{
-			Code:    40001,
-			Message: err.Error(),
-			Data:    nil,
-		})
+		respondError(c, status, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, model.APIResponse{
-		Code:    0,
-		Message: "success",
-		Data:    resp,
-	})
+	respondSuccess(c, resp)
 }
 
 func (h *ConfigHandler) Watch(c *gin.Context) {
@@ -142,21 +101,13 @@ func (h *ConfigHandler) Watch(c *gin.Context) {
 	lastRevisionStr := c.Query("last_revision")
 
 	if lastRevisionStr == "" {
-		c.JSON(http.StatusBadRequest, model.APIResponse{
-			Code:    40001,
-			Message: "last_revision is required",
-			Data:    nil,
-		})
+		respondError(c, http.StatusBadRequest, "last_revision is required")
 		return
 	}
 
 	lastRevision, err := strconv.ParseInt(lastRevisionStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.APIResponse{
-			Code:    40001,
-			Message: "last_revision is invalid",
-			Data:    nil,
-		})
+		respondError(c, http.StatusBadRequest, "last_revision is invalid")
 		return
 	}
 
@@ -167,11 +118,7 @@ func (h *ConfigHandler) Watch(c *gin.Context) {
 			status = http.StatusNotFound
 		}
 
-		c.JSON(status, model.APIResponse{
-			Code:    40001,
-			Message: err.Error(),
-			Data:    nil,
-		})
+		respondError(c, status, err.Error())
 		return
 	}
 
@@ -180,9 +127,29 @@ func (h *ConfigHandler) Watch(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, model.APIResponse{
-		Code:    0,
-		Message: "success",
-		Data:    resp,
-	})
+	respondSuccess(c, resp)
+}
+
+func (h *ConfigHandler) DeleteVersions(c *gin.Context) {
+	var req model.DeleteVersionsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	resp, err := h.service.DeleteVersions(c.Request.Context(), req)
+	if err != nil {
+		status := http.StatusBadRequest
+		switch err.Error() {
+		case "config not found", "target version not found":
+			status = http.StatusNotFound
+		case "cannot delete current version":
+			status = http.StatusConflict
+		}
+
+		respondError(c, status, err.Error())
+		return
+	}
+
+	respondSuccess(c, resp)
 }
