@@ -40,8 +40,9 @@ func (h *ConfigHandler) PublishConfig(c *gin.Context) {
 func (h *ConfigHandler) GetConfig(c *gin.Context) {
 	app := c.Query("app")
 	env := c.Query("env")
+	group := c.Query("group")
 
-	resp, err := h.service.GetCurrent(c.Request.Context(), app, env)
+	resp, err := h.service.GetCurrent(c.Request.Context(), app, env, group)
 	if err != nil {
 		status := http.StatusBadRequest
 		if err.Error() == "config not found" {
@@ -147,6 +148,25 @@ func (h *ConfigHandler) DeleteVersions(c *gin.Context) {
 			status = http.StatusConflict
 		}
 
+		respondError(c, status, err.Error())
+		return
+	}
+
+	respondSuccess(c, resp)
+}
+
+func (h *ConfigHandler) DiffVersions(c *gin.Context) {
+	app := c.Query("app")
+	env := c.Query("env")
+	fromVersion := c.Query("from_version")
+	toVersion := c.Query("to_version")
+
+	resp, err := h.service.DiffVersions(c.Request.Context(), app, env, fromVersion, toVersion)
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "target version not found" {
+			status = http.StatusNotFound
+		}
 		respondError(c, status, err.Error())
 		return
 	}
