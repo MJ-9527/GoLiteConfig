@@ -3,11 +3,15 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
+
+var errWatchConfigNotFound = errors.New("watch config not found")
 
 func (c *Client) Watch(ctx context.Context, onChange func(ConfigChangeEvent)) error {
 	c.mu.Lock()
@@ -31,6 +35,9 @@ func (c *Client) watchLoop(ctx context.Context) {
 
 		data, changed, err := c.watchOnce(ctx)
 		if err != nil {
+			if errors.Is(err, errWatchConfigNotFound) {
+				return
+			}
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -71,6 +78,10 @@ func (c *Client) watchOnce(ctx context.Context) (*configData, bool, error) {
 		return nil, false, nil
 	}
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false, errWatchConfigNotFound
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, false, fmt.Errorf("watch failed: status %d", resp.StatusCode)
 	}
@@ -80,6 +91,9 @@ func (c *Client) watchOnce(ctx context.Context) (*configData, bool, error) {
 		return nil, false, err
 	}
 	if apiResp.Code != 0 {
+		if strings.Contains(strings.ToLower(apiResp.Message), "config not found") {
+			return nil, false, errWatchConfigNotFound
+		}
 		return nil, false, fmt.Errorf("watch failed: %s", apiResp.Message)
 	}
 
