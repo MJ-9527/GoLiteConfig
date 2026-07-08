@@ -52,8 +52,10 @@ func NewClient(cfg Config) (*Client, error) {
 		stopCh:  make(chan struct{}),
 	}
 
-	if err := client.loadInitial(context.Background()); err != nil {
-		return nil, err
+	if cfg.AutoLoadOnStart {
+		if err := client.loadInitial(context.Background()); err != nil {
+			return nil, err
+		}
 	}
 
 	return client, nil
@@ -112,6 +114,10 @@ func (c *Client) loadInitial(ctx context.Context) error {
 	c.version = data.Version
 
 	return nil
+}
+
+func (c *Client) Load(ctx context.Context) error {
+	return c.loadInitial(ctx)
 }
 
 func (c *Client) Get(key string) (string, error) {
