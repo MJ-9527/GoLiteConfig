@@ -11,10 +11,15 @@ import (
 )
 
 func main() {
+	enableAutoLoad := os.Getenv("DEMO_AUTO_LOAD") == "true"
+	enableWatch := os.Getenv("DEMO_AUTO_WATCH") == "true"
+
 	client, err := sdk.NewClient(sdk.Config{
-		ServerAddr: "http://127.0.0.1:8080",
-		App:        "order-service",
-		Env:        "prod",
+		ServerAddr:       "http://127.0.0.1:8080",
+		App:              "order-service",
+		Env:              "prod",
+		AutoLoadOnStart:  enableAutoLoad,
+		AutoWatchOnStart: enableWatch,
 	})
 
 	if err != nil {
@@ -31,21 +36,32 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err = client.Watch(ctx, func(event sdk.ConfigChangeEvent) {
-		fmt.Printf("[hot-reload] revision=%d version=%s\n", event.Revision, event.Version)
-		printConfigChanges(event, keys)
-		fmt.Println()
-	})
-	if err != nil {
-		log.Fatalf("start watch failed: %v", err)
+	if enableWatch {
+		err = client.Load(context.Background())
+		if err != nil {
+			log.Fatalf("load initial config failed: %v", err)
+		}
+
+		err = client.Watch(ctx, func(event sdk.ConfigChangeEvent) {
+			fmt.Printf("[hot-reload] revision=%d version=%s\n", event.Revision, event.Version)
+			printConfigChanges(event, keys)
+			fmt.Println()
+		})
+		if err != nil {
+			log.Fatalf("start watch failed: %v", err)
+		}
 	}
 
-	printCurrentConfig(client, keys)
+	if enableAutoLoad {
+		printCurrentConfig(client, keys)
+	} else {
+		fmt.Println("[demo] auto load is disabled; no config request will be sent on startup")
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	log.Println("demo-service is running, waiting for config changes...")
+	log.Printf("demo-service is running, auto_load=%v auto_watch=%v\n", enableAutoLoad, enableWatch)
 	<-sigCh
 	log.Println("demo-service shutting down...")
 }

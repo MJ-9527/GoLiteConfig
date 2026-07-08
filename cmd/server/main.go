@@ -34,7 +34,9 @@ func main() {
 
 	watchMgr := service.NewWatchManager()
 	auditLogger := service.NewAuditLogger(loggerBundle.Audit())
-	configService := service.NewConfigService(etcdClient, watchMgr, loggerBundle.App(), auditLogger)
+	notifyAgent := service.NewNotifyAgent(loggerBundle.App(), auditLogger)
+	rollbackAgent := service.NewRollbackAgent(loggerBundle.App(), auditLogger)
+	configService := service.NewConfigService(etcdClient, watchMgr, loggerBundle.App(), auditLogger, notifyAgent, rollbackAgent)
 	configHandler := handler.NewConfigHandler(configService)
 
 	r := router.SetupRouter(configHandler, loggerBundle.App())
