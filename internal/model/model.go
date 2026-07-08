@@ -91,3 +91,18 @@ type DeleteVersionsResponse struct {
 	Skipped  []string `json:"skipped,omitempty"`
 	Revision int64    `json:"revision"`
 }
+
+type ConfigDiffResponse struct {
+	App         string              `json:"app"`
+	Env         string              `json:"env"`
+	FromVersion string              `json:"from_version"`
+	ToVersion   string              `json:"to_version"`
+	Added       map[string]string   `json:"added"`
+	Removed     map[string]string   `json:"removed"`
+	Modified    map[string]DiffItem `json:"modified"`
+}
+
+type DiffItem struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
