@@ -7,10 +7,12 @@ import (
 )
 
 type Config struct {
-	ServerAddr  string
-	App         string
-	Env         string
-	PollTimeout time.Duration
+	ServerAddr       string
+	App              string
+	Env              string
+	PollTimeout      time.Duration
+	AutoLoadOnStart  bool
+	AutoWatchOnStart bool
 }
 
 type ConfigProvider interface {
