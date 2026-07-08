@@ -20,18 +20,31 @@ type ConfigService struct {
 	watchMgr *WatchManager
 	logger   *zap.Logger
 	audit    *AuditLogger
+	notify   *NotifyAgent
+	rollback *RollbackAgent
 }
 
-func NewConfigService(etcdClient *etcd.Client, watchMgr *WatchManager, logger *zap.Logger, audit *AuditLogger) *ConfigService {
+type publishOptions struct {
+	skipNotify   bool
+	skipRollback bool
+}
+
+func NewConfigService(etcdClient *etcd.Client, watchMgr *WatchManager, logger *zap.Logger, audit *AuditLogger, notify *NotifyAgent, rollback *RollbackAgent) *ConfigService {
 	return &ConfigService{
 		etcd:     etcdClient,
 		watchMgr: watchMgr,
 		logger:   logger,
 		audit:    audit,
+		notify:   notify,
+		rollback: rollback,
 	}
 }
 
 func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequest) (*model.PublishConfigResponse, error) {
+	return s.publish(ctx, req, publishOptions{})
+}
+
+func (s *ConfigService) publish(ctx context.Context, req model.PublishConfigRequest, options publishOptions) (*model.PublishConfigResponse, error) {
 	log := logging.FromContext(ctx).With(
 		zap.String("app", req.App),
 		zap.String("env", req.Env),
@@ -53,6 +66,22 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 
 	baseKey := fmt.Sprintf("/config/%s/%s", req.App, req.Env)
 	counterKey := baseKey + "/version_counter"
+	currentKey := baseKey + "/current"
+
+	previousVersion, hasPreviousVersion, _, err := s.etcd.Get(ctx, currentKey)
+	if err != nil {
+		log.Error("load previous current version failed", zap.Error(err))
+		return nil, err
+	}
+
+	previousConfig := map[string]string{}
+	if hasPreviousVersion {
+		previousConfig, err = s.getConfigByVersion(ctx, req.App, req.Env, previousVersion)
+		if err != nil {
+			log.Error("load previous config failed", zap.String("previous_version", previousVersion), zap.Error(err))
+			return nil, err
+		}
+	}
 
 	counterValue, exists, _, err := s.etcd.Get(ctx, counterKey)
 	if err != nil {
@@ -124,7 +153,7 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 		return nil, err
 	}
 
-	revision, err = s.etcd.Put(ctx, baseKey+"/current", version)
+	revision, err = s.etcd.Put(ctx, currentKey, version)
 	if err != nil {
 		log.Error("update current version failed", zap.String("version", version), zap.Error(err))
 		return nil, err
@@ -155,12 +184,35 @@ func (s *ConfigService) Publish(ctx context.Context, req model.PublishConfigRequ
 		zap.Int("config_count", len(req.Configs)),
 	)
 
-	return &model.PublishConfigResponse{
+	resp := &model.PublishConfigResponse{
 		App:      req.App,
 		Env:      req.Env,
 		Version:  version,
 		Revision: revision,
-	}, nil
+	}
+
+	if !options.skipNotify && s.notify != nil {
+		s.notify.NotifyConfigChange(ctx, req.App, req.Env, previousVersion, version, revision, previousConfig, req.Configs)
+	}
+
+	if !options.skipRollback && s.rollback != nil {
+		if err := s.rollback.Evaluate(ctx, req.App, req.Env, version, req.Configs); err != nil {
+			if !hasPreviousVersion {
+				log.Warn("skip auto rollback because no previous version is available", zap.Error(err))
+				return resp, nil
+			}
+
+			autoRollbackResp, rollbackErr := s.rollbackToVersion(ctx, req.App, req.Env, previousVersion, version, err.Error())
+			if rollbackErr != nil {
+				log.Error("auto rollback failed", zap.Error(rollbackErr))
+				return resp, nil
+			}
+
+			s.rollback.RecordRollback(ctx, req.App, req.Env, previousVersion, version, autoRollbackResp.Version, err.Error())
+		}
+	}
+
+	return resp, nil
 }
 
 func splitConfigKey(configKey string) (string, string, error) {
@@ -179,7 +231,7 @@ func splitConfigKey(configKey string) (string, string, error) {
 	return group, key, nil
 }
 
-func (s *ConfigService) GetCurrent(ctx context.Context, app, env string) (*model.GetConfigResponse, error) {
+func (s *ConfigService) GetCurrent(ctx context.Context, app, env, group string) (*model.GetConfigResponse, error) {
 	if app == "" {
 		return nil, fmt.Errorf("app is required")
 	}
@@ -214,7 +266,14 @@ func (s *ConfigService) GetCurrent(ctx context.Context, app, env string) (*model
 		if err != nil {
 			return nil, err
 		}
+		if group != "" && !strings.HasPrefix(configKey, group+".") {
+			continue
+		}
 		configs[configKey] = string(kv.Value)
+	}
+
+	if len(configs) == 0 {
+		return nil, fmt.Errorf("config not found")
 	}
 
 	return &model.GetConfigResponse{
@@ -366,13 +425,13 @@ func (s *ConfigService) Rollback(ctx context.Context, req model.RollbackRequest)
 		comment = fmt.Sprintf("rollback to %s", req.TargetVersion)
 	}
 
-	publishResp, err := s.Publish(ctx, model.PublishConfigRequest{
+	publishResp, err := s.publish(ctx, model.PublishConfigRequest{
 		App:       req.App,
 		Env:       req.Env,
 		Configs:   targetConfig,
 		Publisher: req.Publisher,
 		Comment:   comment,
-	})
+	}, publishOptions{skipRollback: true})
 	if err != nil {
 		log.Error("rollback publish failed", zap.Error(err))
 		return nil, err
@@ -420,7 +479,7 @@ func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision
 		return nil, false, fmt.Errorf("env is required")
 	}
 
-	current, err := s.GetCurrent(ctx, app, env)
+	current, err := s.GetCurrent(ctx, app, env, "")
 	if err != nil {
 		log.Warn("load current config failed", zap.Error(err))
 		return nil, false, err
@@ -445,7 +504,7 @@ func (s *ConfigService) Watch(ctx context.Context, app, env string, lastRevision
 
 	select {
 	case <-ch:
-		latest, err := s.GetCurrent(ctx, app, env)
+		latest, err := s.GetCurrent(ctx, app, env, "")
 		if err != nil {
 			log.Error("reload latest config failed", zap.Error(err))
 			return nil, false, err
@@ -589,6 +648,64 @@ func normalizeVersions(single string, multiple []string) []string {
 	return result
 }
 
+func (s *ConfigService) DiffVersions(ctx context.Context, app, env, fromVersion, toVersion string) (*model.ConfigDiffResponse, error) {
+	if app == "" {
+		return nil, fmt.Errorf("app is required")
+	}
+	if env == "" {
+		return nil, fmt.Errorf("env is required")
+	}
+	if fromVersion == "" {
+		return nil, fmt.Errorf("from_version is required")
+	}
+	if toVersion == "" {
+		return nil, fmt.Errorf("to_version is required")
+	}
+
+	fromConfigs, err := s.getConfigByVersion(ctx, app, env, fromVersion)
+	if err != nil {
+		return nil, err
+	}
+	toConfigs, err := s.getConfigByVersion(ctx, app, env, toVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	added := make(map[string]string)
+	removed := make(map[string]string)
+	modified := make(map[string]model.DiffItem)
+
+	for key, toValue := range toConfigs {
+		fromValue, ok := fromConfigs[key]
+		if !ok {
+			added[key] = toValue
+			continue
+		}
+		if fromValue != toValue {
+			modified[key] = model.DiffItem{
+				From: fromValue,
+				To:   toValue,
+			}
+		}
+	}
+
+	for key, fromValue := range fromConfigs {
+		if _, ok := toConfigs[key]; !ok {
+			removed[key] = fromValue
+		}
+	}
+
+	return &model.ConfigDiffResponse{
+		App:         app,
+		Env:         env,
+		FromVersion: fromVersion,
+		ToVersion:   toVersion,
+		Added:       added,
+		Removed:     removed,
+		Modified:    modified,
+	}, nil
+}
+
 func (s *ConfigService) ResetConfigs(ctx context.Context) error {
 	log := logging.FromContext(ctx)
 
@@ -602,4 +719,21 @@ func (s *ConfigService) ResetConfigs(ctx context.Context) error {
 
 	log.Info("reset configs succeeded")
 	return nil
+}
+
+func (s *ConfigService) rollbackToVersion(ctx context.Context, app, env, targetVersion, failedVersion, reason string) (*model.PublishConfigResponse, error) {
+	targetConfig, err := s.getConfigByVersion(ctx, app, env, targetVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	comment := fmt.Sprintf("auto rollback to %s after %s failed: %s", targetVersion, failedVersion, reason)
+
+	return s.publish(ctx, model.PublishConfigRequest{
+		App:       app,
+		Env:       env,
+		Configs:   targetConfig,
+		Publisher: "rollback-agent",
+		Comment:   comment,
+	}, publishOptions{skipRollback: true})
 }
